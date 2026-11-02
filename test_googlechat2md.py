@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import googlechat2md as app
 
@@ -47,6 +48,28 @@ class ExportTests(unittest.TestCase):
         self.assertNotIn("/", folder)
         self.assertNotEqual(folder, app.filename({"name": "spaces/b", "displayName": "Projet / équipe"}))
         self.assertTrue(app.filename({"name": "spaces/a"}).startswith("Conversation sans nom - "))
+
+    def test_interactive_export_confirms_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            token = Path(directory) / "token.json"
+            token.touch()
+            with patch("builtins.input", side_effect=["1", "", "oui", "3"]), \
+                    patch.object(app, "credentials", return_value="creds"), \
+                    patch.object(app, "export") as export:
+                self.assertEqual(app.interactive(str(token)), 0)
+                args, creds = export.call_args.args
+                self.assertTrue(args.overwrite)
+                self.assertEqual(args.output, "exports")
+                self.assertEqual(creds, "creds")
+
+    def test_interactive_does_not_replace_token_without_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            token = Path(directory) / "token.json"
+            token.touch()
+            with patch("builtins.input", side_effect=["2", "", "3"]), \
+                    patch.object(app, "credentials") as credentials:
+                self.assertEqual(app.interactive(str(token)), 0)
+                credentials.assert_not_called()
 
     def test_atomic_write_does_not_overwrite_without_permission(self):
         with tempfile.TemporaryDirectory() as directory:

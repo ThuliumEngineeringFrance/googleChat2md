@@ -21,6 +21,18 @@ python googlechat2md.py --token token.json auth --credentials credentials.json
 
 Connectez-vous avec le compte qui est membre des conversations. Transférez ensuite `token.json` de manière sécurisée sur le serveur et limitez son accès à l'utilisateur chargé de l'export (`chmod 600 token.json`). Le jeton contient des informations sensibles permettant l'accès au compte ; ne le partagez pas et ne le versionnez pas. Le client OAuth et les exports sont également sensibles. Si l'autorisation est révoquée ou expire, recommencez l'authentification.
 
+## Mode interactif
+
+Sur Windows, depuis le dossier du projet :
+
+```powershell
+.\.venv\Scripts\python.exe googlechat2md.py
+```
+
+Sur Linux, après activation de l'environnement virtuel : `python googlechat2md.py`. Le menu permet de configurer l'authentification et de choisir le dossier d'export. Le remplacement des fichiers existants nécessite une confirmation explicite ; il peut retirer des messages devenus inaccessibles. L'authentification initiale nécessite toujours un navigateur sur la machine où elle est lancée.
+
+Pour un serveur sans terminal ou une tâche planifiée, utilisez les commandes explicites ci-dessous : le menu interactif ne démarre pas sans terminal.
+
 ## Export
 
 ```bash

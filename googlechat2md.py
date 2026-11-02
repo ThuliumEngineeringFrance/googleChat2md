@@ -190,10 +190,51 @@ def export(args, creds):
         raise ValueError(f"Export incomplet : {failures} conversation(s) en échec.")
 
 
+def confirm(question):
+    return input(f"{question} [o/N] : ").strip().lower() in {"o", "oui"}
+
+
+def interactive(token):
+    while True:
+        print("\nGoogle Chat vers Markdown")
+        print(f"Jeton : {token}")
+        print("1. Exporter les conversations et espaces")
+        print("2. Configurer ou renouveler l'authentification")
+        print("3. Quitter")
+        choice = input("Votre choix [1-3] : ").strip()
+        if choice == "3":
+            return 0
+        if choice == "2":
+            if Path(token).exists() and not confirm("Remplacer le jeton existant ?"):
+                print("Authentification annulée.")
+                continue
+            client = input("Fichier client OAuth [credentials.json] : ").strip() or "credentials.json"
+            args = argparse.Namespace(command="auth", token=token, credentials=client, port=0,
+                                      overwrite=Path(token).exists())
+            try:
+                credentials(args)
+            except (OSError, ValueError, RefreshError, HttpError) as exc:
+                print(f"Erreur : {exc}", file=sys.stderr)
+        elif choice == "1":
+            if not Path(token).is_file():
+                print("Jeton absent : choisissez d'abord l'authentification (option 2).")
+                continue
+            output = input("Dossier de sortie [exports] : ").strip() or "exports"
+            print("Attention : remplacer les exports peut retirer les messages supprimés ou inaccessibles dans Chat.")
+            overwrite = confirm("Autoriser le remplacement des fichiers existants ?")
+            args = argparse.Namespace(command="export", token=token, output=output, overwrite=overwrite)
+            try:
+                export(args, credentials(args))
+            except (OSError, ValueError, RefreshError, HttpError) as exc:
+                print(f"Erreur : {exc}", file=sys.stderr)
+        else:
+            print("Choix invalide. Saisissez 1, 2 ou 3.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Export Google Chat GROUP_CHAT et SPACE en Markdown.")
     parser.add_argument("--token", default="token.json", help="Fichier privé de jeton OAuth (défaut : token.json).")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
     auth = sub.add_parser("auth", help="Initialiser OAuth localement avec un navigateur.")
     auth.add_argument("--credentials", required=True, help="JSON du client OAuth de bureau Google.")
     auth.add_argument("--port", type=int, default=0, help="Port local OAuth (0 : automatique).")
@@ -202,6 +243,15 @@ def main():
     out.add_argument("--output", default="exports", help="Répertoire de sortie.")
     out.add_argument("--overwrite", action="store_true", help="Actualiser les fichiers existants.")
     args = parser.parse_args()
+    if args.command is None:
+        if not sys.stdin.isatty():
+            print("Une commande est nécessaire sans terminal interactif ; consultez --help.", file=sys.stderr)
+            return 2
+        try:
+            return interactive(args.token)
+        except (EOFError, KeyboardInterrupt):
+            print("\nOpération annulée.")
+            return 1
     try:
         creds = credentials(args)
         if args.command == "export":
