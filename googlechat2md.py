@@ -326,15 +326,20 @@ def export(args, creds):
                             if date not in date_folders:
                                 date_folders[date] = drive_folder(
                                     drive, space_folder, date, drive_marker("date", f"{name}:{date}"))
-                            attachment["_exportDriveId"] = transfer_attachment(
-                                service, drive, date_folders[date], attachment)
+                            try:
+                                attachment["_exportDriveId"] = transfer_attachment(
+                                    service, drive, date_folders[date], attachment)
+                            except (HttpError, OSError, ValueError) as exc:
+                                label = attachment.get("contentName") or "Nom non fourni par Google"
+                                raise ValueError(f"Pièce jointe {scalar(label)} : {exc}") from exc
             atomic_write(path, render(space, messages, bool(drive)), overwrite=args.overwrite)
             if drive:
                 upload_conversation(drive, space_folder, name, path)
             print(f"{name} : {len(messages)} message(s) → {path}")
         except (HttpError, OSError, ValueError) as exc:
             failures += 1
-            print(f"Échec pour {name or 'espace sans identifiant'} : {exc}", file=sys.stderr)
+            display = space.get("displayName") or "Nom non fourni par Google"
+            print(f"Échec pour l'espace {scalar(display)} ({name or 'identifiant absent'}) : {exc}", file=sys.stderr)
     if failures:
         raise ValueError(f"Export incomplet : {failures} conversation(s) en échec.")
 

@@ -1,3 +1,6 @@
+import argparse
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -103,6 +106,25 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(drive.files.return_value.copy.call_args.kwargs["fileId"], "source-id")
         drive.files.return_value.update.assert_not_called()
         chat.media.assert_not_called()
+
+    def test_export_error_includes_space_and_attachment_name(self):
+        chat, drive = Mock(), Mock()
+        space = {"name": "spaces/a", "displayName": "dev test", "spaceType": "SPACE"}
+        message = {"name": "message", "createTime": "2026-01-01T00:00:00Z",
+                   "attachment": [{"name": "attachment", "source": "DRIVE_FILE", "contentName": "test.pdf"}]}
+        chat.spaces.return_value.list.return_value.execute.return_value = {"spaces": [space]}
+        chat.spaces.return_value.messages.return_value.list.return_value.execute.return_value = {"messages": [message]}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(app, "build", side_effect=[chat, drive]), \
+                patch.object(app, "drive_folder", return_value="folder"), \
+                patch.object(app, "transfer_attachment", side_effect=ValueError("accès refusé")), \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            args = argparse.Namespace(output=directory, overwrite=True, drive_folder="folder")
+            with self.assertRaises(ValueError):
+                app.export(args, Mock())
+            self.assertIn('"dev test"', errors.getvalue())
+            self.assertIn('"test.pdf"', errors.getvalue())
+            self.assertIn('accès refusé', errors.getvalue())
 
     def test_drive_attachment_without_id_fails(self):
         with self.assertRaises(ValueError):
