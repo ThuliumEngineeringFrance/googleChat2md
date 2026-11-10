@@ -93,6 +93,21 @@ class ExportTests(unittest.TestCase):
             app.transfer_attachment(chat, drive, "folder", attachment)
         media_upload.return_value.stream.return_value.close.assert_called_once()
 
+    def test_drive_attachment_is_copied_without_moving_original(self):
+        chat, drive = Mock(), Mock()
+        drive.files.return_value.list.return_value.execute.return_value = {"files": []}
+        drive.files.return_value.copy.return_value.execute.return_value = {"id": "copy-id"}
+        attachment = {"name": "attachment", "source": "DRIVE_FILE",
+                      "driveDataRef": {"driveFileId": "source-id"}, "contentName": "test.pdf"}
+        self.assertEqual(app.transfer_attachment(chat, drive, "folder", attachment), "copy-id")
+        self.assertEqual(drive.files.return_value.copy.call_args.kwargs["fileId"], "source-id")
+        drive.files.return_value.update.assert_not_called()
+        chat.media.assert_not_called()
+
+    def test_drive_attachment_without_id_fails(self):
+        with self.assertRaises(ValueError):
+            app.transfer_attachment(Mock(), Mock(), "folder", {"name": "attachment", "source": "DRIVE_FILE"})
+
     def test_transfer_requires_download_reference(self):
         with self.assertRaises(ValueError):
             app.transfer_attachment(Mock(), Mock(), "folder", {"name": "attachment"})

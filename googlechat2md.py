@@ -23,6 +23,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/chat.messages.readonly",
 ]
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+DRIVE_FULL_SCOPE = "https://www.googleapis.com/auth/drive"
 
 
 def atomic_write(path, content, overwrite=False):
@@ -49,8 +50,9 @@ def atomic_write(path, content, overwrite=False):
 def credentials(args):
     token = Path(args.token)
     if args.command == "auth":
-        flow = InstalledAppFlow.from_client_secrets_file(
-                    args.credentials, SCOPES + ([DRIVE_SCOPE] if getattr(args, "drive", False) else []))
+        drive_scopes = ([DRIVE_FULL_SCOPE] if getattr(args, "drive_full", False)
+                        else [DRIVE_SCOPE] if getattr(args, "drive", False) else [])
+        flow = InstalledAppFlow.from_client_secrets_file(args.credentials, SCOPES + drive_scopes)
         creds = flow.run_local_server(host="localhost", port=args.port, open_browser=True,
                                       access_type="offline", prompt="consent")
         if not creds.refresh_token:
@@ -61,7 +63,7 @@ def credentials(args):
     if not token.is_file():
         raise ValueError("Jeton absent : exécutez d'abord la commande auth sur une machine avec navigateur.")
     creds = Credentials.from_authorized_user_file(str(token))
-    if getattr(args, "drive_folder", None) and DRIVE_SCOPE not in (creds.scopes or []):
+    if getattr(args, "drive_folder", None) and not {DRIVE_SCOPE, DRIVE_FULL_SCOPE}.intersection(creds.scopes or []):
         raise ValueError("Autorisation Drive absente : relancez auth --drive avec --overwrite.")
     if not creds.valid:
         if not creds.refresh_token:
@@ -123,7 +125,7 @@ def render(space, messages, drive_transfer=False):
              f"- Type : {scalar(space.get('spaceType', 'Non fourni'))}",
              f"- Export UTC : {now}", "- Période : tous les messages accessibles retournés par l'API",
              f"- Nombre de messages : {len(messages)}",
-             ("- Pièces jointes : contenus Chat transférés vers Drive lorsque disponibles ; fichiers Drive existants non modifiés."
+             ("- Pièces jointes : copies dans Drive lorsque disponibles ; originaux non modifiés."
               if drive_transfer else "- Pièces jointes : métadonnées uniquement, aucun téléchargement."),
              "- Limites : contenu supprimé et messages système exclus ; lecture paginée sans instantané garanti.",
              "- Texte et données structurées conservés tels que retournés ; le rendu Chat peut différer.", ""]
@@ -229,13 +231,34 @@ def upload_conversation(drive, folder, space_name, path):
 def transfer_attachment(chat, drive, folder, attachment):
     """Find a previous transfer by immutable Chat resource name, or create one."""
     name = attachment.get("name")
+    source = attachment.get("source")
     resource = (attachment.get("attachmentDataRef") or {}).get("resourceName")
-    if not name or not resource:
+    drive_id = (attachment.get("driveDataRef") or {}).get("driveFileId")
+    if not name:
+        raise ValueError("Pièce jointe Chat sans identifiant.")
+    if source == "DRIVE_FILE" and not drive_id:
+        raise ValueError(f"Pièce jointe {name} : identifiant du fichier Drive absent.")
+    if source != "DRIVE_FILE" and not resource:
         raise ValueError("Pièce jointe Chat sans identifiant ou référence de téléchargement.")
     marker = hashlib.sha256(name.encode("utf-8")).hexdigest()
     existing = drive_existing(drive, folder, marker)
     if existing:
         return existing
+    if source == "DRIVE_FILE":
+        body = {"parents": [folder], "appProperties": {"googlechat2md": marker}}
+        if attachment.get("contentName"):
+            body["name"] = attachment["contentName"]
+        try:
+            return drive.files().copy(fileId=drive_id, body=body, fields="id",
+                                      supportsAllDrives=True).execute(num_retries=0)["id"]
+        except HttpError as exc:
+            if exc.resp.status in (403, 404):
+                raise ValueError(
+                    f"Pièce jointe {name} : accès refusé ou fichier Drive {drive_id} introuvable. "
+                    "Vérifiez les droits du compte, les restrictions de copie et les scopes OAuth ; "
+                    "drive.file ne donne pas accès à tous les fichiers existants."
+                ) from exc
+            raise
     # A temporary file bounds memory use and is removed on every failure path.
     with tempfile.TemporaryDirectory(prefix="googlechat2md-") as directory:
         local = Path(directory) / "attachment"
@@ -293,12 +316,12 @@ def export(args, creds):
             messages = sorted(unique.values(), key=lambda item: (item.get("createTime", ""), item["name"]))
             if drive:
                 dates = {message["name"]: message_date(message) for message in messages
-                         if any(a.get("source") == "UPLOADED_CONTENT" for a in message.get("attachment", []))}
+                         if any(a.get("source") in {"UPLOADED_CONTENT", "DRIVE_FILE"} for a in message.get("attachment", []))}
                 space_folder = drive_folder(drive, folder, filename(space), drive_marker("space", name))
                 date_folders = {}
                 for message in messages:
                     for attachment in message.get("attachment", []):
-                        if attachment.get("source") == "UPLOADED_CONTENT":
+                        if attachment.get("source") in {"UPLOADED_CONTENT", "DRIVE_FILE"}:
                             date = dates[message["name"]]
                             if date not in date_folders:
                                 date_folders[date] = drive_folder(
@@ -335,9 +358,14 @@ def interactive(token):
                 print("Authentification annulée.")
                 continue
             client = input("Fichier client OAuth [credentials.json] : ").strip() or "credentials.json"
+            print("drive.file limite l'accès aux fichiers créés par l'application ou explicitement autorisés ; les fichiers Drive partagés dans Chat ne sont pas tous accessibles automatiquement.")
+            drive = confirm("Autoriser aussi la création de fichiers dans Drive (drive.file) ?")
+            drive_full = False
+            if drive:
+                print("L'accès Drive étendu permet à l'application de lire, modifier et supprimer les fichiers Drive accessibles au compte.")
+                drive_full = confirm("Demander cet accès étendu pour copier les fichiers Drive existants ?")
             args = argparse.Namespace(command="auth", token=token, credentials=client, port=0,
-                                      overwrite=Path(token).exists(),
-                                      drive=confirm("Autoriser aussi la création de fichiers dans Drive (drive.file) ?"))
+                                      overwrite=Path(token).exists(), drive=drive, drive_full=drive_full)
             try:
                 credentials(args)
             except (OSError, ValueError, RefreshError, HttpError) as exc:
@@ -368,11 +396,12 @@ def main():
     auth.add_argument("--credentials", required=True, help="JSON du client OAuth de bureau Google.")
     auth.add_argument("--port", type=int, default=0, help="Port local OAuth (0 : automatique).")
     auth.add_argument("--overwrite", action="store_true", help="Remplacer le jeton existant.")
-    auth.add_argument("--drive", action="store_true", help="Demander explicitement le scope drive.file.")
+    auth.add_argument("--drive", action="store_true", help="Demander le scope drive.file : seuls les fichiers créés par l'application ou explicitement autorisés lui sont accessibles, pas tous les fichiers Drive partagés dans Chat.")
+    auth.add_argument("--drive-full", action="store_true", help="Demander l'accès complet en lecture et écriture aux fichiers Drive accessibles au compte.")
     out = sub.add_parser("export", help="Exporter les conversations de groupe et espaces accessibles.")
     out.add_argument("--output", default="exports", help="Répertoire de sortie.")
     out.add_argument("--overwrite", action="store_true", help="Actualiser les fichiers existants.")
-    out.add_argument("--drive-folder", help="ID du dossier Drive destiné aux conversations et pièces jointes téléversées dans Chat.")
+    out.add_argument("--drive-folder", help="ID du dossier Drive destiné aux conversations et aux pièces jointes Chat et Drive accessibles avec drive.file.")
     args = parser.parse_args()
     if args.command is None:
         if not sys.stdin.isatty():
